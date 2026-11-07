@@ -732,6 +732,12 @@ jalv_frontend_close(Jalv*)
   return 0;
 }
 
+int
+jalv_frontend_show_ui(Jalv*, int)
+{
+  return -1; // TODO
+}
+
 //-----------------------------------------------------------------------------
 
 void update_ui_presets(Jalv* jalv)

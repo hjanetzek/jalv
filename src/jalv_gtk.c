@@ -72,6 +72,54 @@ on_window_destroy(GtkWidget* ZIX_UNUSED(widget), gpointer ZIX_UNUSED(data))
   gtk_main_quit();
 }
 
+static void
+report_ui_visible(bool visible)
+{
+  fprintf(stdout, "#GUI> %s\n", visible ? "shown" : "hidden");
+  fflush(stdout);
+}
+
+// With --hide-ui, closing the window only hides it (the plugin keeps running)
+static gboolean
+on_window_delete(GtkWidget* widget,
+                 GdkEvent* ZIX_UNUSED(event),
+                 gpointer  data)
+{
+  Jalv* jalv = (Jalv*)data;
+  if (!jalv->opts.hide_ui) {
+    return FALSE;
+  }
+  gtk_widget_hide(widget);
+  report_ui_visible(false);
+  return TRUE;
+}
+
+static gboolean
+show_ui_idle(gpointer data)
+{
+  const int show = GPOINTER_TO_INT(data) - 1;
+  if (s_jalv && s_jalv->window) {
+    GtkWidget* window  = (GtkWidget*)s_jalv->window;
+    const bool visible = gtk_widget_get_visible(window);
+    const bool want    = show < 0 ? !visible : show != 0;
+    if (want) {
+      gtk_window_present(GTK_WINDOW(window));
+    } else {
+      gtk_widget_hide(window);
+    }
+    report_ui_visible(want);
+  }
+  return G_SOURCE_REMOVE;
+}
+
+int
+jalv_frontend_show_ui(Jalv* ZIX_UNUSED(jalv), int show)
+{
+  // From the command line thread: run it in the GTK main loop
+  g_idle_add(show_ui_idle, GINT_TO_POINTER(show + 1));
+  return 0;
+}
+
 int
 jalv_frontend_init(int* argc, char*** argv, JalvOptions* opts)
 {
@@ -154,6 +202,13 @@ jalv_frontend_init(int* argc, char*** argv, JalvOptions* opts)
      G_OPTION_ARG_NONE,
      &opts->no_menu,
      "Do not show Jalv menu on window",
+     NULL},
+    {"hide-ui",
+     'H',
+     0,
+     G_OPTION_ARG_NONE,
+     &opts->hide_ui,
+     "Start with the window hidden; closing it hides it (commands: ui show/hide/toggle)",
      NULL},
     {"jack-name",
      'n',
@@ -1469,6 +1524,7 @@ jalv_frontend_open(Jalv* jalv)
   s_jalv = jalv;
 
   g_signal_connect(window, "destroy", G_CALLBACK(on_window_destroy), jalv);
+  g_signal_connect(window, "delete-event", G_CALLBACK(on_window_delete), jalv);
 
   set_window_title(jalv);
 
@@ -1532,7 +1588,11 @@ jalv_frontend_open(Jalv* jalv)
 
   g_timeout_add(1000 / jalv->ui_update_hz, (GSourceFunc)jalv_update, jalv);
 
-  gtk_window_present(GTK_WINDOW(window));
+  if (jalv->opts.hide_ui) {
+    report_ui_visible(false);
+  } else {
+    gtk_window_present(GTK_WINDOW(window));
+  }
 
   init_cli_thread(jalv);
   gtk_main();

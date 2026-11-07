@@ -48,6 +48,12 @@ jalv_frontend_open(Jalv* jalv);
 int
 jalv_frontend_close(Jalv* jalv);
 
+/// Show (1), hide (0) or toggle (-1) the UI window; may be called from any thread.
+/// Visibility changes are reported on stdout as "#GUI> shown" / "#GUI> hidden".
+/// Returns 0, or -1 if the frontend has no UI window.
+int
+jalv_frontend_show_ui(Jalv* jalv, int show);
+
 /// Needed by console
 void update_ui_title(Jalv* jalv);
 void update_ui_presets(Jalv* jalv);
