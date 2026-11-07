@@ -271,6 +271,12 @@ jalv_frontend_close(Jalv* jalv)
   return 0;
 }
 
+int
+jalv_frontend_show_ui(Jalv* ZIX_UNUSED(jalv), int ZIX_UNUSED(show))
+{
+  return -1;
+}
+
 //-----------------------------------------------------------------------------
 
 void update_ui_title(Jalv* jalv)

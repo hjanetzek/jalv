@@ -1828,6 +1828,12 @@ jalv_process_command(Jalv* jalv, const char* cmd)
   } else if (strncmp(cmd, "bypass ", 7) == 0) {
   		matches = sscanf(cmd + 7,"%n%f", &index, &value);
       jalv->bypass = value ? 2 : 3;
+    } else if (strcmp(cmd, "ui show\n") == 0 || strcmp(cmd, "ui hide\n") == 0 ||
+               strcmp(cmd, "ui toggle\n") == 0) {
+      const int show = cmd[3] == 's' ? 1 : cmd[3] == 'h' ? 0 : -1;
+      if (jalv_frontend_show_ui(jalv, show)) {
+        fprintf(stderr, "error: no UI window\n");
+      }
     } else if (strcmp(cmd, "help\n") == 0) {
 		fprintf(stdout,
 		        "Commands:\n"
@@ -1842,6 +1848,8 @@ jalv_process_command(Jalv* jalv, const char* cmd)
 		        "                    Save preset (BANK_URI is optional)\n"
 		        "  set INDEX VALUE   Set control value by port index\n"
 		        "  set SYMBOL VALUE  Set control value by symbol\n"
+		        "  ui show|hide|toggle\n"
+		        "                    Show or hide the UI window (GTK, see --hide-ui)\n"
 		        "  SYMBOL = VALUE    Set control value by symbol\n");
 	} else if (strcmp(cmd, "\n") == 0) {
 		// Prompt again if just pressed enter

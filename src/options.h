@@ -27,6 +27,7 @@ typedef struct {
   int      show_hidden;     ///< Show controls for notOnGUI ports
   int      no_menu;         ///< Hide menu iff true
   int      show_ui;         ///< Show non-embedded UI
+  int      hide_ui;         ///< Start with the UI window hidden; closing it hides it
   int      print_controls;  ///< Print control changes to stdout
   int      non_interactive; ///< Do not listen for commands on stdin
   char*    ui_uri;          ///< URI of UI to load
