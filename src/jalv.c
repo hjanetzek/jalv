@@ -1593,14 +1593,15 @@ jalv_open(Jalv* const jalv, int* argc, char*** argv)
 int
 jalv_close(Jalv* const jalv)
 {
-  // Terminate the worker
-  jalv_worker_exit(jalv->worker);
-
-  // Deactivate audio
+  // Deactivate audio first: the plugin's run() may still schedule work or read worker
+  // responses
   if (jalv->backend) {
     jalv_backend_deactivate(jalv);
     jalv_backend_close(jalv);
   }
+
+  // Terminate the worker
+  jalv_worker_exit(jalv->worker);
 
   // Free event port buffers
   for (uint32_t i = 0; i < jalv->num_ports; ++i) {
@@ -1850,6 +1851,10 @@ jalv_process_command(Jalv* jalv, const char* cmd)
 }
 
 
+// Held while the command line thread runs a command; main() takes it for good before
+// jalv_close(), so no command (e.g. a preset load into the world) runs while jalv frees
+static pthread_mutex_t cli_command_lock = PTHREAD_MUTEX_INITIALIZER;
+
 void * cli_thread(void *arg) {
 	Jalv* jalv = (Jalv*) arg;
 	fprintf(stdout, "> \n");
@@ -1857,7 +1862,9 @@ void * cli_thread(void *arg) {
 	while (1) {
 		char line[1024];
 		if (fgets(line, sizeof(line), stdin)) {
+			pthread_mutex_lock(&cli_command_lock);
 			jalv_process_command(jalv, line);
+			pthread_mutex_unlock(&cli_command_lock);
 		} else {
 			break;
 		}
@@ -1904,6 +1911,9 @@ main(int argc, char** argv)
 
   // Wait for finish signal from UI or signal handler
   zix_sem_wait(&jalv.done);
+
+  // Wait for a running command to finish, and keep further ones from running
+  pthread_mutex_lock(&cli_command_lock);
 
   return jalv_close(&jalv);
 }
