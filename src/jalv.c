@@ -1920,6 +1920,19 @@ pthread_t init_cli_thread(Jalv* jalv) {
 // Main
 //-----------------------------------------------------------------------------
 
+#define JALV_EXIT_TIMEOUT 2  ///< Seconds the quick exit may take
+#define JALV_EXIT_TIMED_OUT 3 ///< Exit status if it took longer
+
+static void
+exit_timeout_handler(int ZIX_UNUSED(sig))
+{
+  static const char msg[] = "error: exit timed out (plugin stuck?)\n";
+  if (write(STDERR_FILENO, msg, sizeof(msg) - 1) < 0) {
+    // Nothing to do: ending anyway
+  }
+  _exit(JALV_EXIT_TIMED_OUT);
+}
+
 int
 main(int argc, char** argv)
 {
@@ -1949,6 +1962,10 @@ main(int argc, char** argv)
   // skips exit()'s stdio cleanup, which on musl waits for stdin's lock, held by the
   // command line thread's fgets() until the host closes stdin, and the plugin libraries'
   // static destructors, which raced plugin threads in several plugins (crashes at exit).
+  // A plugin stuck in run() keeps the audio backend from deactivating (the backend
+  // waits for the cycle): end anyway after a while, with a status that says so
+  signal(SIGALRM, exit_timeout_handler);
+  alarm(JALV_EXIT_TIMEOUT);
   jalv_stop(&jalv);
   if (jalv.temp_dir) {
     remove(jalv.temp_dir);
