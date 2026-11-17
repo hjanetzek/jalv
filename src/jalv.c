@@ -1590,8 +1590,10 @@ jalv_open(Jalv* const jalv, int* argc, char*** argv)
   return 0;
 }
 
-int
-jalv_close(Jalv* const jalv)
+/// Stop what runs and has effects outside the process: audio, the worker, the
+/// UI, the plugin (deactivate and clean up)
+static void
+jalv_stop(Jalv* const jalv)
 {
   // Deactivate audio first: the plugin's run() may still schedule work or read worker
   // responses
@@ -1622,6 +1624,12 @@ jalv_close(Jalv* const jalv)
     lilv_instance_deactivate(jalv->instance);
     lilv_instance_free(jalv->instance);
   }
+}
+
+int
+jalv_close(Jalv* const jalv)
+{
+  jalv_stop(jalv);
 
   // Clean up
   free(jalv->ports);
@@ -1915,5 +1923,18 @@ main(int argc, char** argv)
   // Wait for a running command to finish, and keep further ones from running
   pthread_mutex_lock(&cli_command_lock);
 
-  return jalv_close(&jalv);
+  // Quick exit: stop audio, the worker, the UI and the plugin, then end without freeing
+  // the rest. Freeing the LV2 world alone took most of the exit of plugins with many
+  // presets (Helm, Dexed: ~35 of ~40 ms on x86_64, several times that on a Raspberry Pi,
+  // with a dozen jalvs stopped at once when a host loads another setup). _exit() also
+  // skips exit()'s stdio cleanup, which on musl waits for stdin's lock, held by the
+  // command line thread's fgets() until the host closes stdin, and the plugin libraries'
+  // static destructors, which raced plugin threads in several plugins (crashes at exit).
+  jalv_stop(&jalv);
+  if (jalv.temp_dir) {
+    remove(jalv.temp_dir);
+  }
+  fflush(stdout);
+  fflush(stderr);
+  _exit(EXIT_SUCCESS);
 }

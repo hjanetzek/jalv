@@ -250,9 +250,17 @@ jalv_frontend_open(Jalv* jalv)
   }
 
   if (!jalv_run_custom_ui(jalv)) {
-    while (zix_sem_try_wait(&jalv->done)) {
+    // Update every 30 ms, but return as soon as done is posted (SIGTERM), not
+    // up to 30 ms later
+    ZixStatus st = ZIX_STATUS_SUCCESS;
+    while ((st = zix_sem_timed_wait(&jalv->done, 0, 30000000U))) {
+      if (st == ZIX_STATUS_NOT_SUPPORTED) {
+        usleep(30000);
+        if (!zix_sem_try_wait(&jalv->done)) {
+          break;
+        }
+      }
       jalv_update(jalv);
-      usleep(30000);
     }
   } else {
     zix_sem_wait(&jalv->done);
