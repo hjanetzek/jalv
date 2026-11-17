@@ -1863,6 +1863,24 @@ jalv_process_command(Jalv* jalv, const char* cmd)
 // jalv_close(), so no command (e.g. a preset load into the world) runs while jalv frees
 static pthread_mutex_t cli_command_lock = PTHREAD_MUTEX_INITIALIZER;
 
+// Parse the data file of the preset a "preset", "presetd" or "presetn" command loads, before
+// the command takes the lock. Plugins that keep all their presets in one file (Helm, Dexed:
+// 4-5 MB) take ~0.4 s for this on x86_64, seconds on a Raspberry Pi; under the lock, a stop
+// (SIGTERM) waited for it. Only the world is touched, which the quick exit doesn't free; the
+// command then finds the file loaded (lilv loads a file once).
+static void
+cli_preload_preset(Jalv* jalv, const char* line)
+{
+	char uri[1024];
+	if (sscanf(line, "preset %1023[-a-zA-Z0-9_:/.%%#]", uri) == 1 ||
+	    sscanf(line, "presetd %1023[-a-zA-Z0-9_:/.%%#]", uri) == 1 ||
+	    sscanf(line, "presetn %1023[-a-zA-Z0-9_:/.%%#]", uri) == 1) {
+		LilvNode* preset = lilv_new_uri(jalv->world, uri);
+		lilv_world_load_resource(jalv->world, preset);
+		lilv_node_free(preset);
+	}
+}
+
 void * cli_thread(void *arg) {
 	Jalv* jalv = (Jalv*) arg;
 	fprintf(stdout, "> \n");
@@ -1870,6 +1888,7 @@ void * cli_thread(void *arg) {
 	while (1) {
 		char line[1024];
 		if (fgets(line, sizeof(line), stdin)) {
+			cli_preload_preset(jalv, line);
 			pthread_mutex_lock(&cli_command_lock);
 			jalv_process_command(jalv, line);
 			pthread_mutex_unlock(&cli_command_lock);
