@@ -1202,6 +1202,37 @@ jalv_init_display(Jalv* const jalv)
   jalv_log(JALV_LOG_INFO, "Scale factor: %.01f\n", jalv->ui_scale_factor);
 }
 
+/// Load the bundles in a ':'-separated list of directories, return true if
+/// the plugin is among them
+static bool
+jalv_load_bundles(LilvWorld* world, const char* dirs, const char* plugin_uri)
+{
+  for (const char* d = dirs; *d;) {
+    const size_t len = strcspn(d, ":");
+    if (len) {
+      // A bundle URI ends with '/', like those lilv_world_load_all() makes
+      char* const path = (char*)calloc(len + 2, 1);
+      memcpy(path, d, len);
+      if (path[len - 1] != '/') {
+        path[len] = '/';
+      }
+      LilvNode* const bundle = lilv_new_file_uri(world, NULL, path);
+      lilv_world_load_bundle(world, bundle);
+      lilv_node_free(bundle);
+      free(path);
+    }
+    d += len + (d[len] == ':');
+  }
+  lilv_world_load_specifications(world);
+  lilv_world_load_plugin_classes(world);
+
+  LilvNode* const   uri    = lilv_new_uri(world, plugin_uri);
+  const LilvPlugin* plugin =
+    lilv_plugins_get_by_uri(lilv_world_get_all_plugins(world), uri);
+  lilv_node_free(uri);
+  return plugin != NULL;
+}
+
 int
 jalv_open(Jalv* const jalv, int* argc, char*** argv)
 {
@@ -1216,9 +1247,19 @@ jalv_open(Jalv* const jalv, int* argc, char*** argv)
     return ret;
   }
 
-  // Load the LV2 world
-  LilvWorld* const world = lilv_world_new();
-  lilv_world_load_all(world);
+  // Load the LV2 world: only the given bundles if they have the plugin
+  LilvWorld* world = lilv_world_new();
+  if (jalv->opts.bundles && !jalv->opts.load && *argc > 1) {
+    const char* const uri = (*argv)[*argc - 1];
+    if (!jalv_load_bundles(world, jalv->opts.bundles, uri)) {
+      jalv_log(JALV_LOG_WARNING, "Plugin not in -B bundles, loading all\n");
+      lilv_world_free(world);
+      world = lilv_world_new();
+      lilv_world_load_all(world);
+    }
+  } else {
+    lilv_world_load_all(world);
+  }
 
   jalv->world         = world;
   jalv->env           = serd_env_new(NULL);
@@ -1622,6 +1663,7 @@ jalv_close(Jalv* const jalv)
 
   free(jalv->opts.name);
   free(jalv->opts.load);
+  free(jalv->opts.bundles);
   free(jalv->opts.controls);
 
   return 0;

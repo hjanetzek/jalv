@@ -39,6 +39,7 @@ print_usage(const char* name, bool error)
   fprintf(os, "Usage: %s [OPTION...] PLUGIN_URI\n", name);
   fprintf(os,
           "Run an LV2 plugin as a Jack application.\n"
+          "  -B DIRS      Load only these bundles (':'-separated), not LV2_PATH\n"
           "  -b SIZE      Buffer size for plugin <=> UI communication\n"
           "  -c SYM=VAL   Set control value (e.g. \"vol=1.4\")\n"
           "  -d           Dump plugin <=> UI communication\n"
@@ -121,6 +122,12 @@ jalv_frontend_init(int* argc, char*** argv, JalvOptions* opts)
         return 1;
       }
       opts->load = jalv_strdup((*argv)[a]);
+    } else if ((*argv)[a][1] == 'B') {
+      if (++a == *argc) {
+        fprintf(stderr, "Missing argument for -B\n");
+        return 1;
+      }
+      opts->bundles = jalv_strdup((*argv)[a]);
     } else if ((*argv)[a][1] == 'b') {
       if (++a == *argc) {
         fprintf(stderr, "Missing argument for -b\n");
