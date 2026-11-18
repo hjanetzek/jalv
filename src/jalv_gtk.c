@@ -21,16 +21,19 @@
 #include "lv2/urid/urid.h"
 #include "suil/suil.h"
 #include "zix/attributes.h"
+#include "zix/ring.h"
 #include "zix/sem.h"
 
 #include <gdk/gdk.h>
 #include <glib-object.h>
+#include <glib-unix.h>
 #include <glib.h>
 #include <gobject/gclosure.h>
 #include <gtk/gtk.h>
 
 #include <float.h>
 #include <math.h>
+#include <signal.h>
 #include <stdbool.h>
 #include <stdint.h>
 #include <stdio.h>
@@ -51,6 +54,13 @@ static Jalv* s_jalv = NULL;
 
 static GtkCheckMenuItem* active_preset_item = NULL;
 static bool              updating           = false;
+
+// The box the plugin UI (or the generic controls) goes into. With --hide-ui it
+// stays empty until the window is first shown: an instantiated plugin UI keeps
+// its timers and repaints going while hidden (JUCE UIs: a fifth of a core each)
+static GtkWidget* s_ui_box        = NULL;
+static bool       s_ui_built      = false;
+static guint      s_update_source = 0; ///< UI update timer, while shown
 
 /// Widget for a control
 typedef struct {
@@ -79,9 +89,61 @@ report_ui_visible(bool visible)
   fflush(stdout);
 }
 
+static void
+build_ui(Jalv* jalv);
+
+/// Start sending plugin updates to the UI: the current control values first,
+/// then what the plugin sends (UI update timer)
+static void
+start_ui_updates(Jalv* jalv)
+{
+  if (s_update_source) {
+    return;
+  }
+
+  // Drop what the plugin sent before the UI was hidden (nothing writes to the
+  // ring while has_ui is false): the current values follow
+  zix_ring_skip(jalv->plugin_to_ui, zix_ring_read_space(jalv->plugin_to_ui));
+  jalv->has_ui = true;
+  jalv_init_ui(jalv);
+
+  s_update_source =
+    g_timeout_add(1000 / jalv->ui_update_hz, (GSourceFunc)jalv_update, jalv);
+}
+
+/// Stop the UI update timer, and the plugin's updates for the UI with it
+static void
+stop_ui_updates(Jalv* jalv)
+{
+  jalv->has_ui = false;
+  if (s_update_source) {
+    g_source_remove(s_update_source);
+    s_update_source = 0;
+  }
+}
+
+static void
+hide_window(Jalv* jalv)
+{
+  gtk_widget_hide((GtkWidget*)jalv->window);
+  stop_ui_updates(jalv);
+  report_ui_visible(false);
+}
+
+static void
+show_window(Jalv* jalv)
+{
+  if (!s_ui_built) {
+    build_ui(jalv);
+  }
+  start_ui_updates(jalv);
+  gtk_window_present(GTK_WINDOW(jalv->window));
+  report_ui_visible(true);
+}
+
 // With --hide-ui, closing the window only hides it (the plugin keeps running)
 static gboolean
-on_window_delete(GtkWidget* widget,
+on_window_delete(GtkWidget* ZIX_UNUSED(widget),
                  GdkEvent* ZIX_UNUSED(event),
                  gpointer  data)
 {
@@ -89,8 +151,7 @@ on_window_delete(GtkWidget* widget,
   if (!jalv->opts.hide_ui) {
     return FALSE;
   }
-  gtk_widget_hide(widget);
-  report_ui_visible(false);
+  hide_window(jalv);
   return TRUE;
 }
 
@@ -103,13 +164,34 @@ show_ui_idle(gpointer data)
     const bool visible = gtk_widget_get_visible(window);
     const bool want    = show < 0 ? !visible : show != 0;
     if (want) {
-      gtk_window_present(GTK_WINDOW(window));
+      show_window(s_jalv);
     } else {
-      gtk_widget_hide(window);
+      hide_window(s_jalv);
     }
-    report_ui_visible(want);
   }
   return G_SOURCE_REMOVE;
+}
+
+/// SIGTERM/SIGINT in the GTK main loop: quit at once, also while the window is
+/// hidden (and the UI update timer, which checks the done semaphore, stopped)
+static gboolean
+on_quit_signal(gpointer data)
+{
+  jalv_frontend_close((Jalv*)data);
+  return G_SOURCE_REMOVE;
+}
+
+/// Quit when something else posted done (the audio backend shut down) while the
+/// UI update timer is stopped
+static gboolean
+check_quit(gpointer data)
+{
+  Jalv* jalv = (Jalv*)data;
+  if (!s_update_source && !zix_sem_try_wait(&jalv->done)) {
+    jalv_frontend_close(jalv);
+    return G_SOURCE_REMOVE;
+  }
+  return G_SOURCE_CONTINUE;
 }
 
 int
@@ -1546,13 +1628,46 @@ jalv_frontend_open(Jalv* jalv)
   gtk_box_pack_start(GTK_BOX(vbox), ui_box, TRUE, TRUE, 0);
   gtk_widget_show(ui_box);
   gtk_widget_show(vbox);
+  s_ui_box = ui_box;
+
+  jalv->features.request_value.request = on_request_value;
+
+  g_unix_signal_add(SIGTERM, on_quit_signal, jalv);
+  g_unix_signal_add(SIGINT, on_quit_signal, jalv);
+  g_timeout_add(200, check_quit, jalv);
+
+  if (jalv->opts.hide_ui) {
+    // The plugin UI is instantiated and updated once the window is shown
+    stop_ui_updates(jalv);
+    report_ui_visible(false);
+  } else {
+    build_ui(jalv);
+    start_ui_updates(jalv);
+    gtk_window_present(GTK_WINDOW(window));
+  }
+
+  init_cli_thread(jalv);
+  gtk_main();
+  suil_instance_free(jalv->ui_instance);
+  jalv->ui_instance = NULL;
+  zix_sem_post(&jalv->done);
+  return 0;
+}
+
+/// Instantiate the plugin UI (or build the generic controls) in the window
+static void
+build_ui(Jalv* jalv)
+{
+  GtkWidget* window = (GtkWidget*)jalv->window;
+  GtkWidget* ui_box = s_ui_box;
+  GtkWidget* vbox   = gtk_widget_get_parent(ui_box);
+
+  s_ui_built = true;
 
   // Attempt to instantiate custom UI if necessary
   if (jalv->ui && !jalv->opts.generic_ui) {
     jalv_ui_instantiate(jalv, jalv_frontend_ui_type(), ui_box);
   }
-
-  jalv->features.request_value.request = on_request_value;
 
   if (jalv->ui_instance) {
     GtkWidget* widget = (GtkWidget*)suil_instance_get_widget(jalv->ui_instance);
@@ -1583,23 +1698,6 @@ jalv_frontend_open(Jalv* jalv)
       MAX(MAX(box_size.width, controls_size.width) + 24, 640),
       box_size.height + controls_size.height);
   }
-
-  jalv_init_ui(jalv);
-
-  g_timeout_add(1000 / jalv->ui_update_hz, (GSourceFunc)jalv_update, jalv);
-
-  if (jalv->opts.hide_ui) {
-    report_ui_visible(false);
-  } else {
-    gtk_window_present(GTK_WINDOW(window));
-  }
-
-  init_cli_thread(jalv);
-  gtk_main();
-  suil_instance_free(jalv->ui_instance);
-  jalv->ui_instance = NULL;
-  zix_sem_post(&jalv->done);
-  return 0;
 }
 
 int
