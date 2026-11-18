@@ -56,8 +56,9 @@ static GtkCheckMenuItem* active_preset_item = NULL;
 static bool              updating           = false;
 
 // The box the plugin UI (or the generic controls) goes into. With --hide-ui it
-// stays empty until the window is first shown: an instantiated plugin UI keeps
-// its timers and repaints going while hidden (JUCE UIs: a fifth of a core each)
+// stays empty until the window is shown, and the plugin UI is freed when it is
+// hidden: an instantiated plugin UI keeps its timers and repaints going while
+// hidden (JUCE UIs: a fifth of a core each on an aarch64 board)
 static GtkWidget* s_ui_box        = NULL;
 static bool       s_ui_built      = false;
 static guint      s_update_source = 0; ///< UI update timer, while shown
@@ -122,11 +123,29 @@ stop_ui_updates(Jalv* jalv)
   }
 }
 
+/// Free the plugin UI (with --hide-ui, when the window is hidden): a hidden UI
+/// keeps its timers and repaints going. The plugin keeps running; the UI is
+/// instantiated again with the current values when the window is shown
+static void
+free_plugin_ui(Jalv* jalv)
+{
+  if (jalv->ui_instance) {
+    suil_instance_free(jalv->ui_instance); // destroys the UI's widget too
+    jalv->ui_instance = NULL;
+    suil_host_free(jalv->ui_host);
+    jalv->ui_host = NULL;
+    s_ui_built    = false;
+  }
+}
+
 static void
 hide_window(Jalv* jalv)
 {
   gtk_widget_hide((GtkWidget*)jalv->window);
   stop_ui_updates(jalv);
+  if (jalv->opts.hide_ui) {
+    free_plugin_ui(jalv);
+  }
   report_ui_visible(false);
 }
 
